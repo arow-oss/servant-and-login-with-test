@@ -110,3 +110,8 @@ Visit login url with browser:
 ```sh
 $ firefox 'https://login.servant-and-login-with.com:3443/twitter?success=https://servant-and-login-with.com:8443/after-login&failure=http://google.com'
 ```
+
+This should allow you to login with Twitter and then redirect you to
+`https://servant-and-login-with.com:8443/after-login`.  This `/after-login`
+endpoint will create the new user in the database.  If the user already exists
+in the database, then then existing user id will be reused.
