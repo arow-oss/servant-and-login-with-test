@@ -31,6 +31,7 @@ import Network.Wai
 import Network.Wai.Handler.Warp
 import Servant
 import Servant.HTML.Blaze
+import Servant.Server.Experimental.Auth
 import Text.Pretty.Simple
 import Web.Cookie
 import Web.JWT
@@ -68,6 +69,9 @@ $(share
 -- Servant Handlers --
 ----------------------
 
+jwtSecret :: Secret
+jwtSecret = secret "foobarbaz"
+
 instance FromHttpApiData Cookies where
   parseHeader = Right . parseCookies
 
@@ -83,7 +87,7 @@ instance MonadUnliftIO Handler where
 
 type AfterLoginApi = "after-login" :> Header "Cookie" Cookies :> Get '[HTML] Text
 
-type HomePageApi = "index.html" :> Get '[HTML] Text
+type HomePageApi = "index.html" :> AuthProtect "jwt" :> Get '[HTML] Text
 
 type Api = AfterLoginApi :<|> HomePageApi
 
@@ -100,8 +104,7 @@ afterLogin backend maybeCookies = do
         Just jwt -> do
           pPrint jwt
           let textJWT = decodeUtf8 jwt
-              secretKey = secret "foobarbaz"
-          let maybeVerifiedJWT = decodeAndVerifySignature secretKey textJWT
+          let maybeVerifiedJWT = decodeAndVerifySignature jwtSecret textJWT
           putStrLn "maybeVerifiedJWT:"
           pPrint maybeVerifiedJWT
           case maybeVerifiedJWT of
@@ -120,7 +123,7 @@ afterLogin backend maybeCookies = do
                         pure userKey
                       let newClaims = insertMap "userid" (Number $ fromIntegral $ fromSqlKey userKey) jwtClaims
                           newClaimsSet = (claims verifiedJWT) { unregisteredClaims = newClaims }
-                          newJWT = encodeUtf8 $ encodeSigned HS256 secretKey newClaimsSet
+                          newJWT = encodeUtf8 $ encodeSigned HS256 jwtSecret newClaimsSet
                           newSetCookie =
                             defaultSetCookie
                               { setCookieName = "jwt"
@@ -136,8 +139,8 @@ afterLogin backend maybeCookies = do
                             ]
                       throwError $ err302 { errHeaders = headers }
 
-homePage :: SqlBackend -> Handler Text
-homePage backend = do
+homePage :: SqlBackend -> Key User -> Handler Text
+homePage backend userKey = do
   (twitterUsers, users) <- flip runSqlConn backend $ do
     (twitterUsers :: [Entity TwitterUser]) <- selectList [] []
     (users :: [Entity User]) <- selectList [] []
@@ -146,7 +149,36 @@ homePage backend = do
   pPrint twitterUsers
   putStrLn "users:"
   pPrint users
-  pure "<p>hello world</p>"
+  pure $ "<p>authenticated as: " <> tshow userKey <> "</p>"
+
+
+type instance AuthServerData (AuthProtect "jwt") = Key User
+
+auther :: AuthHandler Request (AuthServerData (AuthProtect "jwt"))
+auther = mkAuthHandler $ \req -> do
+  let headers = requestHeaders req
+  case lookup "Cookie" headers of
+    Nothing -> error "no cookies"
+    Just rawCookies -> do
+      let cookies = parseCookies rawCookies
+      case lookup "jwt" cookies of
+        Nothing -> error "no jwt cookie"
+        Just jwt -> do
+          pPrint jwt
+          let textJWT = decodeUtf8 jwt
+          let maybeVerifiedJWT = decodeAndVerifySignature jwtSecret textJWT
+          putStrLn "maybeVerifiedJWT:"
+          pPrint maybeVerifiedJWT
+          case maybeVerifiedJWT of
+            Nothing -> error "could not verify jwt"
+            Just verifiedJWT -> do
+              let jwtClaims = unregisteredClaims $ claims verifiedJWT
+              case lookup "userid" jwtClaims of
+                Nothing -> error "could not find the user id in the jwt claims"
+                Just claims ->
+                  case claims ^? _Integral of
+                    Nothing -> error "could not decode user id as number"
+                    Just userId -> pure $ toSqlKey userId
 
 ----------
 -- Main --
@@ -156,7 +188,7 @@ instance MonadLogger IO where
   monadLoggerLog a b c d = runStdoutLoggingT $ monadLoggerLog a b c d
 
 app :: SqlBackend -> Application
-app = serveWithContext (Proxy @Api) EmptyContext . serverRoot
+app = serveWithContext (Proxy @Api) (auther :. EmptyContext) . serverRoot
 
 -- app :: Application
 -- app req respFunc = do
