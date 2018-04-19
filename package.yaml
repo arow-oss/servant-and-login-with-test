@@ -22,7 +22,16 @@ description:         Please see the README on Github at <https://github.com/gith
 dependencies:
 - base >= 4.7 && < 5
 - classy-prelude
+- cookie
 - http-types
+- jwt
+- lens
+- lens-aeson
+- monad-logger
+- mtl
+- persistent
+- persistent-sqlite
+- persistent-template
 - pretty-simple
 - servant-blaze
 - servant-server
