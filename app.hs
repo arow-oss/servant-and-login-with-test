@@ -118,9 +118,16 @@ afterLogin backend maybeCookies = do
                     Nothing -> error "could not find the username key in the profile"
                     Just username -> do
                       userKey <- flip runSqlConn backend $ do
-                        userKey <- insert $ User "fred"
-                        insert_ $ TwitterUser username userKey
-                        pure userKey
+                        maybeTwitterUser <- getBy $ UniqueTwitterUserUsername username
+                        case maybeTwitterUser of
+                          Nothing -> do
+                            -- create new user
+                            userKey <- insert $ User "fred"
+                            insert_ $ TwitterUser username userKey
+                            pure userKey
+                          Just (Entity twitterUserKey (TwitterUser _ userKey)) ->
+                            -- reuse existing user
+                            pure userKey
                       let newClaims = insertMap "userid" (Number $ fromIntegral $ fromSqlKey userKey) jwtClaims
                           newClaimsSet = (claims verifiedJWT) { unregisteredClaims = newClaims }
                           newJWT = encodeUtf8 $ encodeSigned HS256 jwtSecret newClaimsSet
