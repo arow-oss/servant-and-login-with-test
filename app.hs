@@ -201,8 +201,6 @@ refreshCookieMiddleware app req respFunc = app req go
                           newSetCookieHeader =
                             [ ("Set-Cookie", toStrict . toLazyByteString $ renderSetCookie newCookie) ]
                           newResp = mapResponseHeaders (<> newSetCookieHeader) resp
-                      -- putStrLn $ "newResp:"
-                      -- pPrint newResp
                       respFunc newResp
             _ -> respFunc resp
 
