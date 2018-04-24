@@ -88,7 +88,7 @@ instance MonadUnliftIO Handler where
             ioEither >>= either (const (error "throw away servant err")) pure
         )
 
-type AfterLoginApi = "after-login" :> Header "Cookie" Cookies :> Get '[HTML] Text
+type AfterLoginApi = "after-login" :> AuthProtect "jwt" :> Get '[HTML] Text
 
 type HomePageApi = "index.html" :> AuthProtect "jwt" :> Get '[HTML] Text
 
@@ -97,47 +97,25 @@ type Api = AfterLoginApi :<|> HomePageApi
 serverRoot :: SqlBackend -> ServerT Api Handler
 serverRoot backend = afterLogin backend :<|> homePage backend
 
-afterLogin :: SqlBackend -> Maybe Cookies -> Handler Text
-afterLogin backend maybeCookies = do
-  case maybeCookies of
-    Nothing -> error "no cookies"
-    Just cookies ->
-      case lookup "jwt" cookies of
-        Nothing -> error "no jwt cookie"
-        Just jwt -> do
-          pPrint jwt
-          let textJWT = decodeUtf8 jwt
-          let maybeVerifiedJWT = decodeAndVerifySignature jwtSecret textJWT
-          putStrLn "maybeVerifiedJWT:"
-          pPrint maybeVerifiedJWT
-          case maybeVerifiedJWT of
-            Nothing -> error "could not verify jwt"
-            Just verifiedJWT -> do
-              let jwtClaims = unregisteredClaims $ claims verifiedJWT
-              case lookup "profile" jwtClaims of
-                Nothing -> error "could not find the twitter profile in jwt claims"
-                Just profileJSON ->
-                  case profileJSON ^? key "username" . _String of
-                    Nothing -> error "could not find the username key in the profile"
-                    Just username -> do
-                      let twitterId = TwitterId username
-                      time <- liftIO getCurrentTime
-                      flip runSqlConn backend $ do
-                        maybeUser <- getBy $ UniqueUserTwitterId twitterId
-                        case maybeUser of
-                          Nothing -> do
-                            -- create new user
-                            insert_ $ User twitterId "fred"
-                          Just (Entity _ _) ->
-                            -- don't do anything if the user already exists
-                            pure ()
-                        insert_ $ LoginLog twitterId time
-                      let headers =
-                            [ ( "Location"
-                              , "https://servant-and-login-with.com:8443/index.html"
-                              )
-                            ]
-                      throwError $ err302 { errHeaders = headers }
+afterLogin :: SqlBackend -> TwitterId -> Handler Text
+afterLogin backend twitterId = do
+  time <- liftIO getCurrentTime
+  flip runSqlConn backend $ do
+    maybeUser <- getBy $ UniqueUserTwitterId twitterId
+    case maybeUser of
+      Nothing -> do
+        -- create new user
+        insert_ $ User twitterId "fred"
+      Just (Entity _ _) ->
+        -- don't do anything if the user already exists
+        pure ()
+    insert_ $ LoginLog twitterId time
+  let headers =
+        [ ( "Location"
+          , "https://servant-and-login-with.com:8443/index.html"
+          )
+        ]
+  throwError $ err302 { errHeaders = headers }
 
 homePage :: SqlBackend -> TwitterId -> Handler Text
 homePage backend twitterId = do
