@@ -167,12 +167,22 @@ instance MonadLogger IO where
 app :: SqlBackend -> Application
 app = serveWithContext (Proxy @Api) (auther :. EmptyContext) . serverRoot
 
+-- | Automatically update the a given cookie's @max age@ for two weeks from the
+-- current date.
+--
+-- This 'Middleware' will automatically send a @Set-Cookie@ header on a
+-- response if all of the following hold:
+--
+-- 1. The request is a GET.
+-- 2. There are no existing @Set-Cookie@ headers.
+-- 3. The request has a cookie called @jwt@.
+--
+-- These could be relaxed and generalized.  This is just a proof of concept.
 refreshCookieMiddleware :: Middleware
 refreshCookieMiddleware app req respFunc = app req go
   where
     go :: Response -> IO ResponseReceived
     go resp = do
-      print "in middleware...."
       time <- getCurrentTime
       let respHeaders = responseHeaders resp
       case lookup hSetCookie respHeaders of
