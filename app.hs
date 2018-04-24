@@ -26,6 +26,7 @@ import Data.Aeson.Lens
 import Data.ByteString.Builder
 import Database.Persist.Sqlite
 import Database.Persist.TH
+import Network.HTTP.Types.Header (hCookie, hSetCookie)
 import Network.HTTP.Types.Status
 import Network.Wai
 import Network.Wai.Handler.Warp
@@ -188,13 +189,47 @@ instance MonadLogger IO where
 app :: SqlBackend -> Application
 app = serveWithContext (Proxy @Api) (auther :. EmptyContext) . serverRoot
 
--- app :: Application
--- app req respFunc = do
---   pPrint req
---   respFunc $ responseLBS status200 [] "<p>hello</p>"
+refreshCookieMiddleware :: Middleware
+refreshCookieMiddleware app req respFunc = app req go
+  where
+    go :: Response -> IO ResponseReceived
+    go resp = do
+      print "in middleware...."
+      time <- getCurrentTime
+      let respHeaders = responseHeaders resp
+      case lookup hSetCookie respHeaders of
+        Just _ -> respFunc resp
+        Nothing ->
+          case requestMethod req of
+            "GET" -> do
+              let reqHeaders = requestHeaders req
+              case lookup hCookie reqHeaders of
+                Nothing -> respFunc resp
+                Just rawCookies -> do
+                  let cookies = parseCookies rawCookies
+                  case lookup "jwt" cookies of
+                    Nothing -> respFunc resp
+                    Just rawJwt -> do
+                      let newCookie =
+                            defaultSetCookie
+                              { setCookieName = "jwt"
+                              , setCookieValue = rawJwt
+                              , setCookiePath = Just "/"
+                              , setCookieDomain = Just ".servant-and-login-with.com"
+                              , setCookieHttpOnly = True
+                              , setCookieSecure = True
+                              , setCookieMaxAge = Just $ 60 * 60 * 24 * 14 -- two weeks
+                              }
+                          newSetCookieHeader =
+                            [ ("Set-Cookie", toStrict . toLazyByteString $ renderSetCookie newCookie) ]
+                          newResp = mapResponseHeaders (<> newSetCookieHeader) resp
+                      -- putStrLn $ "newResp:"
+                      -- pPrint newResp
+                      respFunc newResp
+            _ -> respFunc resp
 
 main :: IO ()
 main =
   withSqliteConn ":memory:" $ \backend -> do
     runSqlConn (runMigration migrateAll) backend
-    run 8000 $ app backend
+    run 8000 . refreshCookieMiddleware $ app backend
