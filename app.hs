@@ -36,6 +36,8 @@ import Text.Pretty.Simple
 import Web.Cookie
 import Web.JWT
 
+import DbHelpers (TwitterId(TwitterId))
+
 --------
 -- DB --
 --------
@@ -46,22 +48,22 @@ $(share
   ]
   [persistLowerCase|
   User
-    name Text
+    twitterId TwitterId
+    name      Text
+
+    UniqueUserTwitterId twitterId
 
     deriving Eq
     deriving Show
-    deriving Typeable
 
-  TwitterUser
-    username Text
-    user UserId
-
-    UniqueTwitterUserUsername username
-    UniqueTwitterUserUser user
+  -- This simply a log of all the times a user has logged in.
+  -- It is shown on the homepage.
+  LoginLog
+    userId TwitterId
+    time  UTCTime
 
     deriving Eq
     deriving Show
-    deriving Typeable
     |]
  )
 
@@ -117,49 +119,38 @@ afterLogin backend maybeCookies = do
                   case profileJSON ^? key "username" . _String of
                     Nothing -> error "could not find the username key in the profile"
                     Just username -> do
-                      userKey <- flip runSqlConn backend $ do
-                        maybeTwitterUser <- getBy $ UniqueTwitterUserUsername username
-                        case maybeTwitterUser of
+                      let twitterId = TwitterId username
+                      time <- liftIO getCurrentTime
+                      flip runSqlConn backend $ do
+                        maybeUser <- getBy $ UniqueUserTwitterId twitterId
+                        case maybeUser of
                           Nothing -> do
                             -- create new user
-                            userKey <- insert $ User "fred"
-                            insert_ $ TwitterUser username userKey
-                            pure userKey
-                          Just (Entity twitterUserKey (TwitterUser _ userKey)) ->
-                            -- reuse existing user
-                            pure userKey
-                      let newClaims = insertMap "userid" (Number $ fromIntegral $ fromSqlKey userKey) jwtClaims
-                          newClaimsSet = (claims verifiedJWT) { unregisteredClaims = newClaims }
-                          newJWT = encodeUtf8 $ encodeSigned HS256 jwtSecret newClaimsSet
-                          newSetCookie =
-                            defaultSetCookie
-                              { setCookieName = "jwt"
-                              , setCookieValue = newJWT
-                              , setCookiePath = Just "/"
-                              , setCookieDomain = Just ".servant-and-login-with.com"
-                              , setCookieHttpOnly = True
-                              , setCookieSecure = True
-                              }
+                            insert_ $ User twitterId "fred"
+                          Just (Entity _ _) ->
+                            -- don't do anything if the user already exists
+                            pure ()
+                        insert_ $ LoginLog twitterId time
                       let headers =
-                            [ ("Set-Cookie", toStrict . toLazyByteString $ renderSetCookie newSetCookie)
-                            , ("Location", "https://servant-and-login-with.com:8443/index.html")
+                            [ ( "Location"
+                              , "https://servant-and-login-with.com:8443/index.html"
+                              )
                             ]
                       throwError $ err302 { errHeaders = headers }
 
-homePage :: SqlBackend -> Key User -> Handler Text
-homePage backend userKey = do
-  (twitterUsers, users) <- flip runSqlConn backend $ do
-    (twitterUsers :: [Entity TwitterUser]) <- selectList [] []
-    (users :: [Entity User]) <- selectList [] []
-    pure (twitterUsers, users)
-  putStrLn "twitter users:"
-  pPrint twitterUsers
+homePage :: SqlBackend -> TwitterId -> Handler Text
+homePage backend twitterId = do
+  (users, logins) <- flip runSqlConn backend $ do
+    users :: [Entity User] <- selectList [] []
+    logins :: [Entity LoginLog] <- selectList [LoginLogUserId ==. twitterId] []
+    pure (users, logins)
   putStrLn "users:"
   pPrint users
-  pure $ "<p>authenticated as: " <> tshow userKey <> "</p>"
+  putStrLn "logins:"
+  pPrint logins
+  pure $ "<p>authenticated as: " <> tshow twitterId <> "</p>"
 
-
-type instance AuthServerData (AuthProtect "jwt") = Key User
+type instance AuthServerData (AuthProtect "jwt") = TwitterId
 
 auther :: AuthHandler Request (AuthServerData (AuthProtect "jwt"))
 auther = mkAuthHandler $ \req -> do
@@ -180,12 +171,12 @@ auther = mkAuthHandler $ \req -> do
             Nothing -> error "could not verify jwt"
             Just verifiedJWT -> do
               let jwtClaims = unregisteredClaims $ claims verifiedJWT
-              case lookup "userid" jwtClaims of
-                Nothing -> error "could not find the user id in the jwt claims"
-                Just claims ->
-                  case claims ^? _Integral of
-                    Nothing -> error "could not decode user id as number"
-                    Just userId -> pure $ toSqlKey userId
+              case lookup "profile" jwtClaims of
+                Nothing -> error "could not find the twitter profile in jwt claims"
+                Just profileJSON ->
+                  case profileJSON ^? key "username" . _String of
+                    Nothing -> error "could not find the username key in the profile"
+                    Just username -> pure $ TwitterId username
 
 ----------
 -- Main --

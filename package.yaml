@@ -43,6 +43,7 @@ dependencies:
 executables:
   servant-and-login-with-test-exe:
     main:                app.hs
+    other-modules:       DbHelpers
     ghc-options:
     - -threaded
     - -rtsopts
